@@ -1,0 +1,35 @@
+[package]
+name = "gum-perp-sdk"
+version = "0.1.0"
+edition = "2021"
+description = "Rust SDK for Gum Perps REST/WebSocket API and signed trading payloads"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/jupnet/gum-perp-sdk"
+readme = "README.md"
+keywords = ["gum", "perps", "trading", "sdk"]
+categories = ["api-bindings"]
+include = ["Cargo.toml", "README.md", "src/**", "examples/**", "tests/**"]
+
+[features]
+default = ["ed25519"]
+ed25519 = ["dep:ed25519-dalek", "dep:rand_core"]
+
+[dependencies]
+borsh = { version = "1", features = ["derive"] }
+bs58 = "0.5"
+ed25519-dalek = { version = "2", features = ["rand_core"], optional = true }
+futures = "0.3"
+rand = "0.8"
+rand_core = { version = "0.6", features = ["getrandom"], optional = true }
+reqwest = { version = "0.12", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_with = "3"
+thiserror = "2"
+tokio = "1"
+tokio-tungstenite = { version = "0.28", features = ["native-tls"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+
+[workspace]
