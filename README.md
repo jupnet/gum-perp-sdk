@@ -1,6 +1,6 @@
 # Gum Perps SDK
 
-Public SDKs and API documentation for the Gum Perps exchange (JTX), for market
+Public SDKs and API documentation for the Gum Perps exchange, for market
 makers and integrators.
 
 ## API Documentation
