@@ -195,6 +195,9 @@ pub struct TradesResponse {
     pub trades: Vec<TradeResponse>,
 }
 
+/// The server adds statuses ahead of this crate; unknown ones decode as `Unknown`
+/// instead of failing the whole response.
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OrderStatus {
@@ -209,6 +212,8 @@ pub enum OrderStatus {
     Liquidated,
     /// Removed by the system, not its owner.
     Expired,
+    #[serde(other)]
+    Unknown,
 }
 
 impl OrderStatus {
@@ -222,6 +227,7 @@ impl OrderStatus {
             Self::PartiallyLiquidated => "partially_liquidated",
             Self::Liquidated => "liquidated",
             Self::Expired => "expired",
+            Self::Unknown => "unknown",
         }
     }
 }
@@ -311,6 +317,8 @@ pub struct OrderTransaction {
     pub tpsl_kind: Option<String>,
 }
 
+/// See [`OrderStatus`]: unknown types decode as `Unknown`.
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TransactionType {
@@ -322,6 +330,8 @@ pub enum TransactionType {
     CrosschainWithdraw,
     CrosschainWithdrawRefund,
     FeeRebate,
+    #[serde(other)]
+    Unknown,
 }
 
 impl std::fmt::Display for TransactionType {
@@ -335,6 +345,7 @@ impl std::fmt::Display for TransactionType {
             Self::CrosschainWithdraw => "crosschain_withdraw",
             Self::CrosschainWithdrawRefund => "crosschain_withdraw_refund",
             Self::FeeRebate => "fee_rebate",
+            Self::Unknown => "unknown",
         })
     }
 }
