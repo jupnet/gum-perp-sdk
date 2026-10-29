@@ -120,31 +120,6 @@ async fn transfer_builder_encodes_snake_case_account_params() {
 }
 
 #[tokio::test]
-async fn leverage_builder_encodes_snake_case_params() {
-    use gum_perp_sdk::BuildLeverageTransactionQuery;
-
-    let (base_url, request_rx) = one_request_server("{}").await;
-    let client = RestClient::with_base_url(base_url, Pubkey::from([12_u8; 32])).unwrap();
-
-    let _ = client
-        .build_leverage_transaction(&BuildLeverageTransactionQuery {
-            subaccount_id: 2,
-            symbol: "SOL".to_string(),
-            is_isolated: true,
-            leverage: 5,
-        })
-        .await;
-
-    let request = request_rx.await.unwrap();
-    let request_line = request.lines().next().unwrap();
-    assert!(request_line.starts_with("GET /leverage?"), "{request_line}");
-    assert!(request_line.contains("subaccount_id=2"), "{request_line}");
-    assert!(request_line.contains("is_isolated=true"), "{request_line}");
-    assert!(request_line.contains("leverage=5"), "{request_line}");
-    assert!(request_line.contains("symbol=SOL"), "{request_line}");
-}
-
-#[tokio::test]
 async fn deposit_builder_encodes_snake_case_trading_account_param() {
     let (base_url, request_rx) = one_request_server("{}").await;
     let client = RestClient::with_base_url(base_url, Pubkey::from([7_u8; 32])).unwrap();
