@@ -5,14 +5,15 @@ makers and integrators.
 
 ## API Documentation
 
-- [REST API](docs/REST_API.md) — market data, trading accounts, and signed
+- [REST API](docs/REST_API.md) — market data, trading accounts, signed
   trading endpoints (`/order/create`, `/order/cancel`, `/order/cancel-all`,
-  `/order/batch`), plus deposit/withdraw/transfer flows.
+  `/order/batch`), leverage, plus deposit/withdraw/transfer flows.
 - [WebSocket API](docs/WEBSOCKET_API.md) — subscriptions (blockhash, orderbook,
   trades, fills, …), read queries, and signed trading posts.
 
-Production endpoint: `https://gum-api.jup.net/jtx/mainnet-beta` (WebSocket:
-`wss://gum-api.jup.net/jtx/mainnet-beta/ws`).
+Production endpoint: `https://api.gum.ag/perps` (WebSocket:
+`wss://api.gum.ag/perps/ws`). REST requests are rate limited per client IP; see
+[Response Headers](docs/REST_API.md#response-headers).
 
 ## SDKs
 
@@ -26,7 +27,7 @@ Production endpoint: `https://gum-api.jup.net/jtx/mainnet-beta` (WebSocket:
 
 ```toml
 [dependencies]
-gum-perp-sdk = "0.1"
+gum-perp-sdk = "0.2"
 ```
 
 The crate ships a typed REST client, a WebSocket client, and local signing

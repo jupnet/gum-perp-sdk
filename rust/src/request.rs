@@ -4,7 +4,7 @@ use {
             serialize_action_message, CancelAllOrdersParams, CancelOrderParams,
             PlaceOrderIsolatedParams, PlaceOrderParams, TradingParams,
         },
-        types::OnchainTimeInForce,
+        types::{ClientOrderIdAs, OnchainTimeInForce},
         Hash, MarketParams, MarketSymbol, OrderStatus, OrderType, Pubkey, Side, Signer,
         SignerError, TimeInForce, TransactionType, TypedSignature, ValidationError,
     },
@@ -136,6 +136,7 @@ pub type SignedPlaceOrder = PlaceOrderSigned;
 pub type SignedCancelOrder = CancelOrderSigned;
 pub type SignedCancelAllOrders = CancelAllOrdersSigned;
 
+#[serde_with::serde_as]
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct PlaceOrder {
@@ -152,9 +153,34 @@ pub struct PlaceOrder {
     pub reduce_only: bool,
     #[serde(default)]
     pub time_in_force: TimeInForce,
+    #[serde_as(as = "Option<ClientOrderIdAs>")]
+    #[serde(default)]
     pub client_order_id: Option<NonZeroU64>,
+    /// USDC native units moved from the cross-margin parent into the isolated
+    /// account with this order. Required iff `is_isolated`; `0` draws on the
+    /// isolated account's existing balance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub collateral_amount: Option<u64>,
+    /// Isolated-margin order; must be paired with `collateral_amount`.
+    #[serde(default)]
+    pub is_isolated: bool,
+}
+
+impl PlaceOrder {
+    /// Mirrors the API's admission check so a mismatched pair fails before signing.
+    fn validate_isolated_fields(&self) -> Result<(), ValidationError> {
+        if self.is_isolated != self.collateral_amount.is_some() {
+            return Err(ValidationError::InvalidInput(
+                "is_isolated and collateral_amount must be provided together".to_string(),
+            ));
+        }
+        if self.reduce_only && self.collateral_amount.unwrap_or(0) > 0 {
+            return Err(ValidationError::InvalidInput(
+                "reduce-only orders never draw collateral: set collateral_amount to 0".to_string(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl JTXAction for PlaceOrder {
@@ -218,9 +244,10 @@ impl JTXAction for PlaceOrder {
             client_order_id: self.client_order_id,
         };
 
-        Ok(if let Some(collateral_amount) = self.collateral_amount {
+        self.validate_isolated_fields()?;
+        Ok(if self.is_isolated {
             TradingParams::PlaceIsolated(PlaceOrderIsolatedParams {
-                collateral_amount,
+                collateral_amount: self.collateral_amount.unwrap_or(0),
                 order,
             })
         } else {
@@ -260,6 +287,8 @@ pub struct CancelOrder {
     #[serde_as(as = "Option<serde_with::DisplayFromStr>")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub order_id: Option<u128>,
+    #[serde_as(as = "Option<ClientOrderIdAs>")]
+    #[serde(default)]
     pub client_order_id: Option<NonZeroU64>,
 }
 
@@ -392,6 +421,19 @@ pub struct BatchOrderRequest {
 pub struct BuildTransactionQuery {
     pub amount: u64,
     pub trading_account: String,
+}
+
+/// GET /leverage - Query parameters.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct BuildLeverageTransactionQuery {
+    #[serde(default)]
+    pub subaccount_id: u8,
+    pub symbol: String,
+    /// Set the isolated-margin preference instead of the cross-margin one.
+    #[serde(default)]
+    pub is_isolated: bool,
+    /// Integer leverage, `1..=max_leverage` from the market info.
+    pub leverage: u8,
 }
 
 /// GET /transfer - Query parameters

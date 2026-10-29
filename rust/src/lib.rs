@@ -4,7 +4,7 @@
 //! crates.io without depending on internal JTX workspace crates.
 
 /// Production Gum Perps API endpoint used by the default constructors.
-pub const GUM_API_URL: &str = "https://gum-api.jup.net/jtx/mainnet-beta";
+pub const GUM_API_URL: &str = "https://api.gum.ag/perps";
 
 mod action;
 mod market;
@@ -18,18 +18,21 @@ mod ws_types;
 
 pub use {
     action::JTX_PROGRAM_ID,
-    market::{MarketInfo, MarketParams, MarketStats, QUOTE_DECIMALS},
+    market::{
+        MarketInfo, MarketParams, MarketStats, OrderLimitConfigInfo, OrderSizeLimitInfo,
+        RiskTierInfo, QUOTE_DECIMALS,
+    },
     primitives::{
         Hash, ParseBytes32Error, ParseSignatureError, Pubkey, Signer, SignerError, TypedSignature,
     },
     request::{
-        ApiSigningError, BatchOrderActionSigned, BatchOrderRequest, BuildTransactionQuery,
-        BuildTransferTransactionQuery, CancelAllOrders, CancelAllOrdersSigned, CancelOrder,
-        CancelOrderSigned, CreateTradingAccountQuery, FundingHistoryQuery, OhlcvParams,
-        OrderHistoryQuery, PlaceOrder, PlaceOrderSigned, RenameSubAccountRequest,
-        SignableTradingRequest, SignedApiRequest, SignedCancelAllOrders, SignedCancelOrder,
-        SignedPlaceOrder, SubmitTransactionRequest, TradingAccountTradesQuery, TradingAction,
-        TransactionHistoryQuery,
+        ApiSigningError, BatchOrderActionSigned, BatchOrderRequest, BuildLeverageTransactionQuery,
+        BuildTransactionQuery, BuildTransferTransactionQuery, CancelAllOrders,
+        CancelAllOrdersSigned, CancelOrder, CancelOrderSigned, CreateTradingAccountQuery,
+        FundingHistoryQuery, OhlcvParams, OrderHistoryQuery, PlaceOrder, PlaceOrderSigned,
+        RenameSubAccountRequest, SignableTradingRequest, SignedApiRequest, SignedCancelAllOrders,
+        SignedCancelOrder, SignedPlaceOrder, SubmitTransactionRequest, TradingAccountTradesQuery,
+        TradingAction, TransactionHistoryQuery,
     },
     response::*,
     rest::{ApiClientError, ApiClientResult, RestClient},

@@ -1,5 +1,5 @@
 use {
-    crate::{Hash, Side},
+    crate::{types::ClientOrderIdAs, Hash, Side},
     serde::{Deserialize, Serialize},
 };
 
@@ -39,7 +39,11 @@ pub struct RenameSubAccountResponse {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TradingAccountData {
+    /// Withdrawable balance: what `/withdraw`, `/transfer` and new isolated
+    /// orders can use. Unrealized profit counts only up to the vault's transfer ratio.
     pub free_balance: String,
+    /// Initial-margin headroom for new cross-margin orders, unrealized profit counted in full.
+    pub available_to_trade: String,
     pub token_balance: u64,
     #[serde(default)]
     pub account_value: Option<String>,
@@ -55,6 +59,7 @@ pub struct TradingAccountData {
 #[serde(rename_all = "camelCase")]
 pub struct TradingAccountBalancesResponse {
     pub free_balance: String,
+    pub available_to_trade: String,
     pub token_balance: u64,
 }
 
@@ -73,6 +78,32 @@ pub struct PerpPositionResponse {
     pub funding_accrued: String,
     pub pending_funding_payable: String,
     pub pending_funding_receivable: String,
+    /// Funding accrued since the position opened, settled plus pending (positive = received).
+    pub total_funding: String,
+    /// User-selected leverage; 0 = unset.
+    pub selected_leverage: u8,
+    pub effective_imr_bps: u16,
+    pub maintenance_margin_ratio_bps: u16,
+    /// Maintenance margin is `notional * mmr - maintenance_amount`, floored at 0.
+    pub maintenance_amount: String,
+    /// Risk tier band; `None` for untiered markets and legacy positions.
+    pub tier_index: Option<u8>,
+    pub tier_table_idx: u8,
+    /// Held in an isolated-margin account; a cross-margin account's listing
+    /// includes its isolated accounts' positions.
+    pub isolated: bool,
+    /// Collateral of the backing isolated account; `None` for cross-margin positions.
+    pub collateral: Option<String>,
+}
+
+/// A market's leverage preference set via `POST /leverage`; markets without one are omitted.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketLeverageResponse {
+    pub symbol: String,
+    /// Preference of the market's isolated-margin account rather than the cross-margin one.
+    pub isolated: bool,
+    pub leverage: u8,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -87,6 +118,13 @@ pub struct SubAccount {
     pub pubkey: String,
     pub subaccount_id: u8,
     pub name: Option<String>,
+    /// Isolated accounts share their cross-margin parent's `subaccount_id`;
+    /// this and `market` tell them apart.
+    #[serde(default)]
+    pub isolated: bool,
+    /// Symbol an isolated account is bound to; `None` for cross-margin subaccounts.
+    #[serde(default)]
+    pub market: Option<String>,
     pub data: TradingAccountData,
 }
 
@@ -101,10 +139,13 @@ pub struct SubmitTransactionResponse {
     pub signature: String,
 }
 
+#[serde_with::serde_as]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlaceResponse {
     pub symbol: String,
+    #[serde_as(as = "Option<ClientOrderIdAs>")]
+    #[serde(default)]
     pub client_order_id: Option<std::num::NonZeroU64>,
 }
 
@@ -139,6 +180,7 @@ pub struct TradeResponse {
     pub trading_accounts: [String; 2],
 }
 
+#[serde_with::serde_as]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TradingAccountTradeResponse {
@@ -148,9 +190,12 @@ pub struct TradingAccountTradeResponse {
     pub size: String,
     pub txid: String,
     pub time: i64,
+    #[serde_as(as = "Option<ClientOrderIdAs>")]
+    #[serde(default)]
     pub client_order_id: Option<u64>,
     pub fee: String,
     pub realized_pnl: Option<String>,
+    pub isolated: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -160,13 +205,26 @@ pub struct TradesResponse {
     pub trades: Vec<TradeResponse>,
 }
 
+/// New statuses may be added; ones this version does not know parse as `Unknown`.
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OrderStatus {
     Open,
     PartiallyFilled,
     Filled,
+    /// Cancelled with nothing filled.
     Cancelled,
+    /// Cancelled after a partial fill, including the unfilled remainder of an IOC or market order.
+    PartiallyFilledCancelled,
+    /// Liquidation order that stepped the position down a risk tier.
+    PartiallyLiquidated,
+    /// Liquidation order sized to close the whole position.
+    Liquidated,
+    /// Removed by the system, not its owner.
+    Expired,
+    #[serde(other)]
+    Unknown,
 }
 
 impl OrderStatus {
@@ -176,6 +234,11 @@ impl OrderStatus {
             Self::PartiallyFilled => "partially_filled",
             Self::Filled => "filled",
             Self::Cancelled => "cancelled",
+            Self::PartiallyFilledCancelled => "partially_filled_cancelled",
+            Self::PartiallyLiquidated => "partially_liquidated",
+            Self::Liquidated => "liquidated",
+            Self::Expired => "expired",
+            Self::Unknown => "unknown",
         }
     }
 }
@@ -195,6 +258,10 @@ impl std::str::FromStr for OrderStatus {
             "partially_filled" => Ok(Self::PartiallyFilled),
             "filled" => Ok(Self::Filled),
             "cancelled" => Ok(Self::Cancelled),
+            "partially_filled_cancelled" => Ok(Self::PartiallyFilledCancelled),
+            "partially_liquidated" => Ok(Self::PartiallyLiquidated),
+            "liquidated" => Ok(Self::Liquidated),
+            "expired" => Ok(Self::Expired),
             _ => Err(format!("Invalid order status '{s}'")),
         }
     }
@@ -212,6 +279,8 @@ pub struct OrderHistoryResponse {
 pub struct OrderHistoryEntry {
     #[serde_as(as = "serde_with::DisplayFromStr")]
     pub order_id: u128,
+    #[serde_as(as = "Option<ClientOrderIdAs>")]
+    #[serde(default)]
     pub client_order_id: Option<u64>,
     pub symbol: String,
     pub side: Side,
@@ -226,6 +295,12 @@ pub struct OrderHistoryEntry {
     pub order_type: String,
     pub time_in_force: String,
     pub reduce_only: bool,
+    pub isolated: bool,
+    /// Collateral the isolated order committed at placement; `None` for cross-margin orders.
+    pub initial_collateral: Option<String>,
+    /// Signed net of execution: consumed budget minus equity settled back; `None`
+    /// exactly when `initial_collateral` is.
+    pub executed_collateral: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -247,25 +322,42 @@ pub struct OrderTransaction {
     pub liquidation_fee: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    /// Cancellation reason, on cancel transactions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
+/// New types may be added; ones this version does not know parse as `Unknown`.
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TransactionType {
     Deposit,
     Withdraw,
-    SettlePnl,
-    SettleFunding,
+    TransferIn,
+    TransferOut,
+    CrosschainDeposit,
+    CrosschainWithdraw,
+    CrosschainWithdrawRefund,
+    /// Market maker fee rebate.
+    FeeRebate,
+    #[serde(other)]
+    Unknown,
 }
 
 impl std::fmt::Display for TransactionType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Deposit => write!(f, "deposit"),
-            Self::Withdraw => write!(f, "withdraw"),
-            Self::SettlePnl => write!(f, "settle_pnl"),
-            Self::SettleFunding => write!(f, "settle_funding"),
-        }
+        f.write_str(match self {
+            Self::Deposit => "deposit",
+            Self::Withdraw => "withdraw",
+            Self::TransferIn => "transfer_in",
+            Self::TransferOut => "transfer_out",
+            Self::CrosschainDeposit => "crosschain_deposit",
+            Self::CrosschainWithdraw => "crosschain_withdraw",
+            Self::CrosschainWithdrawRefund => "crosschain_withdraw_refund",
+            Self::FeeRebate => "fee_rebate",
+            Self::Unknown => "unknown",
+        })
     }
 }
 
@@ -276,8 +368,12 @@ impl std::str::FromStr for TransactionType {
         match s {
             "deposit" => Ok(Self::Deposit),
             "withdraw" => Ok(Self::Withdraw),
-            "settle_pnl" => Ok(Self::SettlePnl),
-            "settle_funding" => Ok(Self::SettleFunding),
+            "transfer_in" => Ok(Self::TransferIn),
+            "transfer_out" => Ok(Self::TransferOut),
+            "crosschain_deposit" => Ok(Self::CrosschainDeposit),
+            "crosschain_withdraw" => Ok(Self::CrosschainWithdraw),
+            "crosschain_withdraw_refund" => Ok(Self::CrosschainWithdrawRefund),
+            "fee_rebate" => Ok(Self::FeeRebate),
             _ => Err(format!("Invalid transaction type '{s}'")),
         }
     }
@@ -294,8 +390,6 @@ pub struct TransactionHistoryResponse {
 pub struct TransactionHistoryEntry {
     pub transaction_type: TransactionType,
     pub amount: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub symbol: Option<String>,
     pub signature: String,
     pub timestamp: i64,
 }
@@ -338,6 +432,12 @@ pub struct FundingRateHistoryResponse {
 pub struct UserFundingEntry {
     pub symbol: String,
     pub funding: f64,
+    /// Position side at settlement; `None` for settlements predating position logging.
+    pub side: Option<Side>,
+    /// Absolute position size at settlement.
+    pub size: Option<String>,
+    /// Realized hourly rate the settlement paid, as a decimal per hour.
+    pub funding_rate: Option<String>,
     pub signature: String,
     pub timestamp: i64,
 }
@@ -361,9 +461,16 @@ pub struct OpenOrderResponse {
     pub remaining_size: String,
     pub expiry_timestamp: u64,
     pub status: OrderStatus,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde_as(as = "Option<ClientOrderIdAs>")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_order_id: Option<u64>,
     pub reduce_only: bool,
+    /// Rests on an isolated-margin account, so cancelling requires `is_isolated: true`.
+    #[serde(default)]
+    pub isolated: bool,
+    /// Collateral still reserved against an isolated order; `None` for cross-margin.
+    #[serde(default)]
+    pub collateral: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
