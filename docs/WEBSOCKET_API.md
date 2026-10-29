@@ -158,6 +158,9 @@ Events are sent as `JTXApiEvent` objects with the following types:
 | `SettleFundingCollateral` | Funding collateral settled |
 | `MoveCollateral` | Collateral moved between two cross-margin subaccounts or between a cross-margin account and its isolated child. Sent once to each distinct source/destination family root. |
 | `LeverageUpdate` | The account's per-market leverage preference changed. Sent to subscribers of the trading account whose preference was set. |
+| `ConditionalOrderUpsert` | A take-profit / stop-loss setting was armed, or an armed one was re-armed with new terms. |
+| `ConditionalOrderCancel` | A setting was cleared — by a cancel request, by the position-gone sweep, or after repeated on-chain rejections. Not emitted when a setting fires. |
+| `ConditionalOrderTrigger` | A setting's trigger price was crossed and its reduce-only order was matched. |
 | `CrosschainDeposit` | A bridge deposit made through the Gum app was credited to the account. |
 | `CrosschainWithdraw` | A bridge withdrawal made through the Gum app was debited from the account. |
 | `CrosschainIntent` | A Gum app crosschain intent executed for the account. |
@@ -280,6 +283,8 @@ Cancel events are sent whenever a resting order is removed from the orderbook.
 | `timestamp` | number | Unix timestamp (seconds) |
 | `reason` | string | Why the order was cancelled (see below) |
 | `clientOrderId` | string \| null | Client-provided order ID as a decimal string, if one was set on the cancelled order |
+| `tpslId` | number? | `internalId` of the take-profit / stop-loss that displaced this order. Only on `reason: "TpslTriggerPriority"` |
+| `tpslKind` | string? | `"TakeProfit"` or `"StopLoss"` — which kind of setting displaced it, alongside `tpslId` |
 
 **`reason` values:**
 
@@ -293,6 +298,7 @@ Cancel events are sent whenever a resting order is removed from the orderbook.
 | `"MatchLimitReached"` | Matching halted before fill due to compute/heap limits, so the remainder was not posted |
 | `"Eviction"` | Orderbook full — the worst-priced order was evicted to make room for an incoming better-priced one |
 | `"ReduceOnlyInvalid"` | Existing reduce-only order was invalidated by a same-side order placement |
+| `"TpslTriggerPriority"` | A fired take-profit / stop-loss outranked this resting reduce-only order, which expired to make room for the trigger. `tpslId` and `tpslKind` name the setting |
 | `"Liquidation"` | Cancelled during a liquidation cascade for the owner |
 | `"PriceBandExceeded"` | Resting order drifted outside the price-deviation band and was expired when a taker reached it |
 | `"InsufficientMargin"` | Expired by the margin keeper: the owner fell below initial margin, this order would have grown the position, and the mark had moved through its limit |
@@ -355,6 +361,135 @@ Emitted when `POST /leverage` sets a per-market leverage preference. A live posi
 | `isIsolated` | boolean | `true` when the isolated-margin preference was set |
 | `oldLeverage` | number | Previous leverage (0 = was unset) |
 | `newLeverage` | number | New leverage |
+
+#### ConditionalOrderUpsert Event
+
+Emitted when a take-profit / stop-loss setting is armed, and again whenever
+`POST /conditionalOrder/update` re-arms it — the same fields either way, always
+the terms the setting now holds. Keyed on `internalId` it reads as an upsert, so
+a client that applies every one of these ends up correct without branching;
+`isUpdate` is there for clients that want to tell the first version apart.
+
+```json
+{
+  "action": "ConditionalOrderUpsert",
+  "signature": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+  "conditionalOrders": "ABC123...",
+  "market": "SOL",
+  "marketPubkey": "GHI789...",
+  "tradingAccountId": 42,
+  "internalId": 3,
+  "triggerPriceLots": 12000,
+  "triggerInputValue": 12000,
+  "triggerInputKind": "price",
+  "closeAmount": 5000,
+  "closeAmountKind": "bps",
+  "limitPriceLots": 0,
+  "clientTpslId": 77,
+  "positionId": 3,
+  "timestamp": 1702656000,
+  "kind": 0,
+  "triggerDirection": 1,
+  "positionSide": 0,
+  "triggerPriceType": 0,
+  "isUpdate": false
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `signature` | string | Transaction signature |
+| `conditionalOrders` | string | `ConditionalOrders` account, derived per `(trading account, market)` |
+| `market` | string | Market symbol. Falls back to the market public key if the symbol cannot be resolved. |
+| `marketPubkey` | string | Market public key |
+| `tradingAccountId` | number | Trading account ID the setting belongs to |
+| `internalId` | number | Addresses the setting for its whole life; carried by the cancel and trigger events |
+| `triggerPriceLots` | number | Trigger price in quote lots per base lot |
+| `triggerInputValue` | number | What the user entered, read according to `triggerInputKind`. The trigger itself is always `triggerPriceLots` |
+| `triggerInputKind` | string | `"price"` (quote lots per base lot), `"pnl"` (native quote), or `"roiBps"` — the create's `roiPercent` converted, `10%` reading back as `1000`. The latter two are magnitudes; `kind` gives the direction |
+| `closeAmount` | number | Close size, read according to `closeAmountKind` |
+| `closeAmountKind` | string | `"lots"` (fixed at create), `"bps"` (re-measured against the position at trigger), or `"notional"` (native quote units, divided by the trigger price) |
+| `limitPriceLots` | number | Limit price of the submitted order; `0` = market-after-trigger |
+| `clientTpslId` | number | Client id the setting was armed under (`0` if none) |
+| `positionId` | number | The position instance the setting is bound to. A setting whose position closed or flipped is cleared, not fired; a liquidation the position survives keeps it |
+| `timestamp` | number | Unix timestamp (seconds) |
+| `kind` | number | `0` = take profit, `1` = stop loss |
+| `triggerDirection` | number | `0` = at-or-below, `1` = at-or-above |
+| `positionSide` | number | `0` = long, `1` = short |
+| `triggerPriceType` | number | Price the trigger watches: `0` = mark, `1` = last |
+| `isUpdate` | boolean | `true` when an update re-armed a setting that already existed, `false` on its first arming |
+
+Prices and sizes are in lots here, unlike the REST listing's decimals.
+
+#### ConditionalOrderCancel Event
+
+Emitted when a setting is cleared, one event per setting. A setting that **fires** is
+cleared without one of these — `ConditionalOrderTrigger` is its record.
+
+```json
+{
+  "action": "ConditionalOrderCancel",
+  "signature": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+  "conditionalOrders": "ABC123...",
+  "market": "SOL",
+  "marketPubkey": "GHI789...",
+  "tradingAccountId": 42,
+  "internalId": 3,
+  "timestamp": 1702656000,
+  "kind": 0,
+  "reason": 0
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `internalId` | number | The setting that was cleared |
+| `kind` | number | `0` = take profit, `1` = stop loss |
+| `reason` | number | `0` = user request, `1` = position gone (closed, reversed, taken over by a liquidation, a later instance, or the close it resolves to is below the market minimum), `2` = the trigger was rejected on-chain 5 times running, `3` = the limit-after-trigger price is outside the market's price band |
+
+Other fields are as on `ConditionalOrderUpsert`.
+
+#### ConditionalOrderTrigger Event
+
+Emitted when the trigger price is crossed and the reduce-only order it submits has
+been matched.
+
+```json
+{
+  "action": "ConditionalOrderTrigger",
+  "signature": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+  "conditionalOrders": "ABC123...",
+  "market": "SOL",
+  "marketPubkey": "GHI789...",
+  "tradingAccountId": 42,
+  "internalId": 3,
+  "observedPricePerLot": 12010000,
+  "triggerPricePerLot": 12000000,
+  "submittedBaseLots": 50,
+  "filledBaseLots": 50,
+  "orderId": 123456789,
+  "clientTpslId": 77,
+  "timestamp": 1702656000,
+  "kind": 0,
+  "triggerPriceType": 0
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `internalId` | number | The setting that fired |
+| `observedPricePerLot` | number | The price that crossed the trigger, from the source `triggerPriceType` names, in native quote per base lot |
+| `triggerPricePerLot` | number | The trigger price in the same units, for comparison |
+| `submittedBaseLots` | number | Size submitted, after a percent size was re-measured or a fixed size clipped |
+| `filledBaseLots` | number | How much filled. A short fill is **not** retried — the setting is gone either way |
+| `orderId` | number | Sequence number of the submitted order. Unlike `orderId` elsewhere in this document it is not the composite `(price, seq)` id, so it cannot be passed to a cancel request |
+| `clientTpslId` | number | Client id the setting was armed under (`0` if none) |
+| `kind` | number | `0` = take profit, `1` = stop loss |
+| `triggerPriceType` | number | `0` = mark, `1` = last |
+
+Other fields are as on `ConditionalOrderUpsert`. If the fill closed the position
+outright, every setting still armed on that market is swept alongside it, each
+emitting a `ConditionalOrderCancel` with `reason: 1`.
 
 #### Error Event
 
@@ -426,7 +561,8 @@ Subscribe to receive real-time position updates for a specific trading account. 
   "tierIndex": 0,
   "tierTableIdx": 0,
   "isolated": false,
-  "collateral": null
+  "collateral": null,
+  "adlQuantile": 2
 }
 ```
 
@@ -455,6 +591,7 @@ Subscribe to receive real-time position updates for a specific trading account. 
 | `tierTableIdx` | number | Tier table this position margins through. `0` is the market default returned by `/markets`; a whitelisted account can be pinned to another table |
 | `isolated` | boolean | `true` when the position is held in an isolated-margin account |
 | `collateral` | string \| null | For an isolated position, the USDC collateral held by its isolated account — the equity backing the position (deposits ± realized PnL and fees, whether or not yet settled, excluding the open lots' unrealized PnL and funding). Can be negative while a bankrupt position is being liquidated. `null` for cross-margin positions |
+| `adlQuantile` | number \| null | ADL indicator: where the position stands in the market's auto-deleveraging queue for its side, which ranks profitable positions by profit percentage × effective leverage. `4` = top 10% (the head of the queue is always `4`), `3` = top 25%, `2` = top 50%, `1` = the rest, `0` = not in the queue (not profitable, account under liquidation, or ADL disabled on the market; see `isAdlEnabled` on `/markets`). Re-ranked about every 5 seconds; `null` while the indicator is unavailable. Current standing only, not a prediction that the position will or will not be deleveraged. `0` on a closed-position update |
 
 > **Isolated accounts.** Subscribe to the cross-margin subaccount: its stream includes the positions held by its isolated-margin accounts (each marked `isolated: true`), matching the REST positions endpoint. Subscribing to an isolated account's own pubkey receives nothing.
 
@@ -751,7 +888,7 @@ and 24h price change for **all markets**. One push every 5 seconds.
 | `markets[].markPrice` | number | Current risk price used for margin, liquidation estimates, unrealized PnL, and withdrawal health. In phase one this equals `indexPrice`. |
 | `markets[].openInterest` | number | Open interest notional in quote currency |
 | `markets[].openInterestBase` | number | Open interest in base units |
-| `markets[].fundingRateBps1h` | number \| null | Estimated 1h funding rate (bps); `null` when the cache has no fresh estimate for the current hour |
+| `markets[].fundingRateBps1h` | number \| null | The market's latest on-chain funding rate scaled to one hour (bps); `null` only for a market without a funding interval |
 | `markets[].priceChange24h` | number | Absolute 24h price change in quote currency |
 | `markets[].priceChangePercent24h` | number | 24h price change percent |
 
@@ -976,6 +1113,42 @@ Cancel all open orders for a market.
 
 ---
 
+### Conditional Orders (TP/SL)
+
+Create, update and cancel take-profit / stop-loss settings. The action body is the REST request body plus `method`; fields, validation and errors are those of [Create](REST_API.md#create-conditional-order), [Update](REST_API.md#update-conditional-order) and [Cancel Conditional Order](REST_API.md#cancel-conditional-order). The outcome streams on `tradingAccountEvents` as `ConditionalOrderUpsert` / `ConditionalOrderCancel`.
+
+| `method` | REST equivalent |
+|----------|-----------------|
+| `"createConditional"` | `POST /conditionalOrder` |
+| `"updateConditional"` | `POST /conditionalOrder/update` |
+| `"cancelConditional"` | `POST /conditionalOrder/cancel` |
+
+**Request:**
+```json
+{
+  "method": "post",
+  "id": "tpsl-123",
+  "payload": {
+    "pubkey": "USER_PUBKEY",
+    "action": {
+      "method": "createConditional",
+      "symbol": "SOL",
+      "kind": "TakeProfit",
+      "trigger": {"type": "price", "value": 120.0},
+      "triggerPriceType": "MarkPrice",
+      "closeAmount": {"type": "bps", "value": 5000},
+      "tradingAccount": "TRADING_ACCOUNT_PUBKEY",
+      "recentBlockhash": "BLOCKHASH",
+      "signature": "SIGNATURE"
+    }
+  }
+}
+```
+
+A success response carries `{"success": true}` in `data`.
+
+---
+
 ### Request Response
 
 All get/post requests receive a response:
@@ -1026,3 +1199,6 @@ All get/post requests receive a response:
 | `post` | `place` | Place a new order |
 | `post` | `cancel` | Cancel an order |
 | `post` | `cancelAll` | Cancel all orders |
+| `post` | `createConditional` | Arm a TP/SL |
+| `post` | `updateConditional` | Re-arm a TP/SL |
+| `post` | `cancelConditional` | Cancel TP/SL settings |

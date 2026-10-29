@@ -35,4 +35,7 @@ Leverage uses the same build-then-submit flow as deposit/withdraw:
 `build_leverage_transaction(...)` returns an unsigned transaction to sign as the user, then
 `submit_leverage(...)` submits it. Read current preferences with `trading_account_leverage(...)`.
 
+Take-profit / stop-loss orders and position history are documented in the
+[REST API](../docs/REST_API.md) but not yet wrapped by this crate.
+
 See `examples/` for REST, signing, and WebSocket usage.

@@ -139,6 +139,7 @@ pub struct MarketInfo {
     pub taker_fee_bps: f64,
     pub maker_fee_bps: f64,
     pub liquidation_fee_bps: f64,
+    pub is_adl_enabled: bool,
     pub timestamp: u64,
     pub last_updated_ms: u64,
     /// Empty when the market margins flat.

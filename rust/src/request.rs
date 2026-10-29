@@ -417,7 +417,7 @@ pub struct BuildTransactionQuery {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub struct BuildLeverageTransactionQuery {
+pub struct BuildUpsertAccountLeverageQuery {
     #[serde(default)]
     pub subaccount_id: u8,
     pub symbol: String,

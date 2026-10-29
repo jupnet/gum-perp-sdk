@@ -7,13 +7,13 @@ makers and integrators.
 
 - [REST API](docs/REST_API.md) — market data, trading accounts, signed
   trading endpoints (`/order/create`, `/order/cancel`, `/order/cancel-all`,
-  `/order/batch`), leverage, plus deposit/withdraw/transfer flows.
+  `/order/batch`), take-profit / stop-loss orders, leverage, plus
+  deposit/withdraw/transfer flows.
 - [WebSocket API](docs/WEBSOCKET_API.md) — subscriptions (blockhash, orderbook,
   trades, fills, …), read queries, and signed trading posts.
 
 Production endpoint: `https://api.gum.ag/perps` (WebSocket:
-`wss://api.gum.ag/perps/ws`). REST requests are rate limited per client IP; see
-[Response Headers](docs/REST_API.md#response-headers).
+`wss://api.gum.ag/perps/ws`).
 
 ## SDKs
 

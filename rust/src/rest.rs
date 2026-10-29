@@ -1,17 +1,17 @@
 use {
     crate::{
         ApiSigningError, BatchOrderRequest, BatchOrderResponse, BlockhashResponse,
-        BuildLeverageTransactionQuery, BuildTransactionQuery, BuildTransactionResponse,
-        BuildTransferTransactionQuery, CancelAllOrdersSigned, CancelAllResponse, CancelOrderSigned,
-        CancelResponse, CandleResponse, CheckTradingAccountResponse, CreateTradingAccountQuery,
-        CreateTradingAccountResponse, FundingHistoryQuery, FundingRateHistoryResponse,
-        FundingRateResponse, FundingRatesResponse, MarketInfo, MarketLeverageResponse, OhlcvParams,
-        OpenOrderResponse, OrderHistoryQuery, OrderHistoryResponse, OrderbookResponse,
-        PerpPositionResponse, PlaceOrderSigned, PlaceResponse, Pubkey, RenameSubAccountRequest,
-        RenameSubAccountResponse, SignedApiRequest, SubmitTransactionRequest,
-        SubmitTransactionResponse, TradesResponse, TradingAccountBalancesResponse,
-        TradingAccountTradeResponse, TradingAccountTradesQuery, TransactionHistoryQuery,
-        TransactionHistoryResponse, UserFundingResponse,
+        BuildTransactionQuery, BuildTransactionResponse, BuildTransferTransactionQuery,
+        BuildUpsertAccountLeverageQuery, CancelAllOrdersSigned, CancelAllResponse,
+        CancelOrderSigned, CancelResponse, CandleResponse, CheckTradingAccountResponse,
+        CreateTradingAccountQuery, CreateTradingAccountResponse, FundingHistoryQuery,
+        FundingRateHistoryResponse, FundingRateResponse, FundingRatesResponse, MarketInfo,
+        MarketLeverageResponse, OhlcvParams, OpenOrderResponse, OrderHistoryQuery,
+        OrderHistoryResponse, OrderbookResponse, PerpPositionResponse, PlaceOrderSigned,
+        PlaceResponse, Pubkey, RenameSubAccountRequest, RenameSubAccountResponse, SignedApiRequest,
+        SubmitTransactionRequest, SubmitTransactionResponse, TradesResponse,
+        TradingAccountBalancesResponse, TradingAccountTradeResponse, TradingAccountTradesQuery,
+        TransactionHistoryQuery, TransactionHistoryResponse, UserFundingResponse,
     },
     reqwest::{Client as HttpClient, Method, StatusCode},
     serde::{de::DeserializeOwned, Serialize},
@@ -367,7 +367,7 @@ impl RestClient {
     /// client's pubkey and pass it to [`Self::submit_leverage`].
     pub async fn build_leverage_transaction(
         &self,
-        query: &BuildLeverageTransactionQuery,
+        query: &BuildUpsertAccountLeverageQuery,
     ) -> ApiClientResult<BuildTransactionResponse> {
         self.get_json_with_query("/leverage", query).await
     }

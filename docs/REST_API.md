@@ -16,16 +16,6 @@ x-machine-timestamp: 1756339200123
 
 The value is milliseconds since the Unix epoch, read from the server clock when the response is sent. Use it for latency measurement and clock-skew estimation.
 
-Requests are rate limited per client IP at the edge, in a fixed 60-second window shared by every path. Each response reports the window:
-
-```
-x-ratelimit-limit: 1000, 1000;w=60
-x-ratelimit-remaining: 999
-x-ratelimit-reset: 24
-```
-
-`x-ratelimit-reset` is the number of seconds until the window resets. Polling clients should stream market data and account updates over the [WebSocket API](./WEBSOCKET_API.md) instead of spending this budget.
-
 ## Authentication
 
 Endpoints whose **Headers** table requires `X-PUBKEY` use it to identify the user. Public market and account-by-address reads do not require it. The header alone is not proof of ownership; signed write endpoints verify the signature as described below.
@@ -183,6 +173,7 @@ Get all available markets.
     "initialMarginRatioBps": 1000,
     "maintenanceMarginRatioBps": 500,
     "maxLeverage": 10,
+    "isAdlEnabled": false,
     "timestamp": 1702656000,
     "lastUpdatedMs": 100,
     "riskTiers": [
@@ -237,6 +228,7 @@ Get all available markets.
 | `initialMarginRatioBps` | number | Initial margin requirement in basis points (e.g., 1000 = 10%). On a tiered market this is the first `riskTiers` band. |
 | `maintenanceMarginRatioBps` | number | Maintenance margin requirement in basis points (e.g., 500 = 5%). On a tiered market this is the first `riskTiers` band. |
 | `maxLeverage` | number | Largest user-selectable leverage for `POST /leverage`. On a tiered market this is the first `riskTiers` band's `maxLeverage`; whitelisted accounts are bounded by their own table instead. |
+| `isAdlEnabled` | boolean | Whether auto-deleveraging is enabled. When `true`, a liquidation whose close order cannot fill at the bankruptcy price closes the rest against opposing positions, which then show `closeReason: "adl"` in position history. When `false`, the position stays in liquidation and the close is retried until the book fills it. |
 | `timestamp` | number | Unix timestamp of last update |
 | `lastUpdatedMs` | number | Milliseconds since last update |
 | `riskTiers` | array | Notional bands the market's default table margins on, ascending. Empty when the market applies `initialMarginRatioBps` at every size. |
@@ -361,6 +353,7 @@ an entry in `GET /markets`, including all trading-limit groups.
   "initialMarginRatioBps": 1000,
   "maintenanceMarginRatioBps": 500,
   "maxLeverage": 10,
+  "isAdlEnabled": false,
   "timestamp": 1702656000,
   "lastUpdatedMs": 100,
   "riskTiers": [
@@ -597,7 +590,7 @@ Get current funding rates for all markets.
 |-------|------|-------------|
 | `fundingRates` | array | Array of funding rate entries |
 | `fundingRates[].symbol` | string | Market symbol |
-| `fundingRates[].rateBps1h` | number | 1-hour funding rate in basis points, derived from the latest on-chain rate |
+| `fundingRates[].rateBps1h` | number | `fundingRate` scaled from `fundingIntervalSeconds` to one hour, in basis points |
 | `fundingRates[].fundingRate` | string | Latest final funding rate for the current interval as a decimal (e.g. `"0.0075"` = 0.75% per interval) |
 | `fundingRates[].predictedFundingRate` | string | Current projected rate from the same formula. The chain recomputes the rate on every update, so this equals `fundingRate` |
 | `fundingRates[].fundingIntervalSeconds` | number | User-facing funding period: the rate's period basis — not a payment schedule. The premium-averaging window follows the hourly distribution interval, not this interval |
@@ -609,7 +602,6 @@ Get current funding rates for all markets.
 - Funding follows the P0-6 formula: impact bid/ask premium index → time-weighted average premium → interest-clamped adjustment → interval scaling → per-market cap/floor
 - Positive rate means longs pay shorts; negative means shorts pay longs
 - Funding accrues continuously and is applied to accounts on the distribution cadence (hourly), not in a lump at the period boundary. A "next funding payment" countdown should use `nextFundingDistributionTime`; `nextFundingCollectionTime` marks the period boundary for rate averaging and settlement-health monitoring
-- `rateBps1h` returns 0 if no cached estimate is available for the current hour
 
 **Example:**
 ```bash
@@ -1218,6 +1210,413 @@ curl -X POST https://api.gum.ag/perps/order/batch \
 
 ---
 
+## Conditional Orders (TP/SL)
+
+Take-profit / stop-loss settings on an open position. Nothing rests on the book
+until the watched price (`triggerPriceType`) crosses the trigger; a keeper then
+submits a reduce-only order.
+
+Settings live in a `ConditionalOrders` account per `(trading account, market)` with
+**8 slots**, shared between take profits and stop losses. That is the hard cap per
+account and symbol — cross and each isolated account get their own 8 — and a create
+past it is `ConditionalOrdersFull` (80). An update reuses its setting's slot. The API
+creates the account on the first create, server-paid.
+
+### Create Conditional Order
+
+**Endpoint:** `POST /conditionalOrder`
+
+**Headers:**
+
+| Header | Required | Description |
+|--------|----------|-------------|
+| `X-PUBKEY` | Yes | User's public key |
+| `Content-Type` | Yes | `application/json` |
+
+**Request Body (take profit, percent of position):**
+```json
+{
+  "subaccountId": 0,
+  "symbol": "SOL",
+  "kind": "TakeProfit",
+  "trigger": { "type": "price", "value": 120.0 },
+  "triggerPriceType": "MarkPrice",
+  "closeAmount": { "type": "bps", "value": 5000 },
+  "tradingAccount": "TRADING_ACCOUNT_PUBKEY",
+  "recentBlockhash": "BLOCKHASH",
+  "signature": "SIGNATURE"
+}
+```
+
+**Request Body (stop loss, fixed size with a limit price):**
+```json
+{
+  "symbol": "SOL",
+  "kind": "StopLoss",
+  "trigger": { "type": "pnl", "value": -250.0 },
+  "triggerPriceType": "MarkPrice",
+  "closeAmount": { "type": "quantity", "value": 5.0 },
+  "limitPrice": 89.5,
+  "clientOrderId": "77",
+  "tradingAccount": "TRADING_ACCOUNT_PUBKEY",
+  "recentBlockhash": "BLOCKHASH",
+  "signature": "SIGNATURE"
+}
+```
+
+**Request Fields:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `subaccountId` | number | No | Subaccount index (0-255). Defaults to `0` |
+| `symbol` | string | Yes | Market symbol |
+| `isIsolated` | boolean | No | Attach to the isolated-margin account instead of the cross position. Defaults to `false` |
+| `kind` | string | Yes | `"TakeProfit"` or `"StopLoss"` |
+| `trigger` | object | Yes | Where the trigger sits, as `{"type": ..., "value": ...}`. See below |
+| `triggerPriceType` | string | Yes | Price the trigger watches: `"MarkPrice"` or `"LastPrice"` |
+| `closeAmount` | object | Yes | Close size, as `{"type": ..., "value": ...}`. See below |
+| `limitPrice` | number | No | Limit price for the submitted order. Omitted = market-after-trigger |
+| `clientOrderId` | string \| number | No | Client id, scoped to `(tradingAccount, subaccountId, isIsolated, symbol)`. Send as a decimal string |
+| `tradingAccount` | string | Yes | The user's cross-margin subaccount, for isolated settings too |
+| `recentBlockhash` | string | Yes | Recent blockhash for signing |
+| `signature` | string | Yes | User's signature |
+
+**`trigger`** is a tagged union. Whichever form is used, it must resolve to the
+profitable side of entry for a take profit and the losing side for a stop loss:
+
+| `type` | `value` | Meaning |
+|--------|---------|---------|
+| `"price"` | number | Price the trigger fires at, on the `triggerPriceType` source |
+| `"pnl"` | number | How far the position is up or down, in quote, at the trigger |
+| `"roiPercent"` | number | Return on the position's initial margin, as a percent (`10` = 10%, `12.5` = 12.5%) |
+
+`pnl` and `roiPercent` are **signed by kind**: positive for a take profit, which
+names a gain, negative for a stop loss, which names a loss. A sign disagreeing
+with `kind` is a `400` rather than a silently flipped trigger, and `0` is
+rejected — it is no distance off entry. The magnitude is what reaches the chain;
+`kind` carries the direction. `roiPercent` is converted to basis points on the
+way in (`10` becomes `1000`), and a percent below one basis point is a `400`.
+
+`pnl` and `roiPercent` are resolved against the live position **on-chain**, so the
+price they derive uses the position as it stands when the setting is armed, not a
+snapshot. Only the derived price is stored, and it is the only thing compared
+against the mark — the raw input is reported once on the `ConditionalOrderUpsert`
+event and indexed there, not held in the setting. Rounding runs
+toward increasing position PnL — a long ceils to the tick, a short floors — so a
+take profit lands no closer to entry than asked and a stop loss no further from it.
+`roiPercent` measures against the position's effective initial margin ratio
+(`effectiveImrBps` on the positions endpoint), with the tier taken at the entry
+notional, so a `10%` ROI at a 10% ratio moves the trigger 1% off entry.
+
+**`triggerPriceType`** selects what the keeper compares the trigger against:
+`"MarkPrice"` the oracle mark, `"LastPrice"` the market's last on-chain trade.
+A `"LastPrice"` setting only fires on a trade made at or after the time it was
+created or last updated, so a trade from before then never fires it. Margin,
+liquidation, OI notional, and P0-2 price protection always use the mark,
+whatever a setting watches.
+
+**`closeAmount`** is a tagged union — one `type`, one `value` — so a body can carry
+exactly one size:
+
+| `type` | `value` | Meaning |
+|--------|---------|---------|
+| `"quantity"` | number | Base units, e.g. `5.0` SOL, as an order's `quantity` |
+| `"bps"` | integer | Basis points of the position at trigger time, `0 < value <= 10000` (`5000` = 50%) |
+| `"notional"` | number | Quote notional, e.g. `300.0` USDC, resolved into base units at `triggerPrice` |
+
+`bps` is an integer so a close size can never be silently rounded on the way in;
+a fractional `value` is a `400`.
+
+**Response:**
+```json
+{
+  "success": true
+}
+```
+
+Accepted and published — not armed. Confirm on the WebSocket `ConditionalOrderUpsert`
+event; an on-chain rejection arrives as `Error`.
+
+**Rejections:**
+
+| Condition | Error (custom code) |
+|-----------|---------------------|
+| No open position on the market | `NoPositionForConditionalOrder` (75) |
+| `limitPrice` past the trigger — above it for a long's close, below it for a short's | `ConditionalLimitPriceUnfillable` (85) |
+| `limitPrice` too large to price the position's close | `OrderSizeAboveLimit` (13) |
+| Trigger on the wrong side of entry — it must be above for a long's TP or a short's SL, below for the mirrors. A `pnl` / `roiPercent` too small to clear a tick lands back on entry and is rejected here | `InvalidTriggerPrice` (76) |
+| `closeAmount` missing, or an unknown `type` | `400 BAD_REQUEST` |
+| All 8 slots armed | `ConditionalOrdersFull` (80) |
+| Same-kind sizes would sum past the position | `ConditionalOrderAggregateExceedsPosition` (82) |
+| A live `clientOrderId` given a differing create | `ConditionalOrderClientIdConflict` (83) |
+| Account under liquidation | `AccountUnderLiquidation` |
+
+**Notes:**
+
+- A create never replaces. Each takes a slot and mints a fresh `internalId`; to change
+  a setting, `POST /conditionalOrder/update` re-arms it in place under the same id.
+- Sizes aggregate per kind, independently: two 50% take profits are fine, a third is
+  not, and a full-size stop loss alongside them is still fine.
+- `bps` is measured at trigger time, so ladders compound — 5000 then 5000 closes
+  75% of the original position. `quantity` is clipped to the position. A bps size
+  that re-measures to nothing cancels the setting (`reason: 1`).
+- `notional` divides by `triggerPrice`, not by the mark at trigger time, so the size
+  it aggregates against at create is the one it spends when it fires. It floors to
+  whole base lots, and a notional past what the position is worth at the trigger is
+  rejected like an oversized `quantity`.
+- `limitPrice` must be reachable by the crossing that fires the setting: at or below
+  the trigger when the close sells (a long), at or above it when the close buys (a
+  short). Past it the IOC could only expire, so arming is refused. Its distance from
+  the market is not checked at create: if it sits outside the market's price band
+  when the setting fires, the trigger cancels it outright (`reason: 3`) rather than
+  spending the retry budget on a price that cannot change.
+- A fired setting **outranks the account's own resting reduce-only orders** on that
+  side. Any that no longer fit the position once the trigger's order is placed are
+  removed, including when the trigger's IOC goes on to fill nothing. Their owner did
+  not cancel them, so they end at status `"expired"`, not `"cancelled"`, and their
+  cancel transaction carries `reason: "TpslTriggerPriority"` with the `tpslId` and
+  `tpslKind` of the setting that displaced them. Resting orders that are *not*
+  reduce-only are left alone. Note the same-kind aggregate check at create counts only settings, not
+  resting reduce-only orders.
+- `clientOrderId` is unique per `(tradingAccount, subaccountId, isIsolated, symbol)`
+  among **armed** settings and never collides with an order's. Every lookup and cancel
+  therefore takes the symbol, and the aggregated listing may return several sharing one
+  id: the same id can be live on two symbols at once, one of them isolated — a market is
+  never both margin types at once, so cross and isolated share an id only across symbols.
+  A triggered order carries none — correlate it by the trigger event's `orderId`.
+- An identical repeat of a live `clientOrderId` returns `success` and creates nothing;
+  a differing one is `ConditionalOrderClientIdConflict`. The id frees once the setting
+  is cancelled or fires.
+- While the account is under liquidation, settings cannot be armed, updated or triggered,
+  but they stay armed. Once it recovers with the original position still open on the same
+  side, they resume with their original trigger prices and close at most what is left of
+  the position. A setting whose position the liquidation closed is cleared with `reason: 1`
+  when a keeper next touches it, and never fires on a position opened later.
+- Pending fills on the event heap are consumed first, so an uncranked maker fill still
+  counts as a position.
+
+**Example:**
+```bash
+curl -X POST https://api.gum.ag/perps/conditionalOrder \
+  -H "X-PUBKEY: YOUR_PUBKEY" \
+  -H "Content-Type: application/json" \
+  -d '{"symbol":"SOL","kind":"TakeProfit",
+       "trigger":{"type":"price","value":120.0},
+       "triggerPriceType":"MarkPrice",
+       "closeAmount":{"type":"bps","value":5000},
+       "tradingAccount":"...","recentBlockhash":"...","signature":"..."}'
+```
+
+### Update Conditional Order
+
+**Endpoint:** `POST /conditionalOrder/update`
+
+Re-arms one live setting in place. It keeps its slot, its `internalId`, and its
+`clientOrderId`; everything else is replaced by what the request carries, so an
+update sends the terms in full rather than a patch — an omitted `limitPrice`
+means market-after-trigger, not "leave it as it was".
+
+**Request Body:**
+```json
+{
+  "symbol": "SOL",
+  "kind": "TakeProfit",
+  "internalId": 3,
+  "trigger": { "type": "price", "value": 130.0 },
+  "triggerPriceType": "MarkPrice",
+  "closeAmount": { "type": "bps", "value": 5000 },
+  "tradingAccount": "TRADING_ACCOUNT_PUBKEY",
+  "recentBlockhash": "BLOCKHASH",
+  "signature": "SIGNATURE"
+}
+```
+
+**Request Fields:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `subaccountId` | number | No | Subaccount index (0-255). Defaults to `0` |
+| `symbol` | string | Yes | Market symbol |
+| `isIsolated` | boolean | No | Target the isolated-margin account. Defaults to `false` |
+| `kind` | string | Yes | `"TakeProfit"` or `"StopLoss"` — the kind the setting already has, part of what addresses it |
+| `internalId` | number | No | The setting to re-arm. Exactly one of this and `clientOrderId` |
+| `clientOrderId` | string \| number | No | The setting armed under this client id on `symbol` |
+| `trigger` | object | Yes | New trigger, same tagged union as create |
+| `triggerPriceType` | string | Yes | `"MarkPrice"` or `"LastPrice"` |
+| `closeAmount` | object | Yes | New close size, same tagged union as create |
+| `limitPrice` | number | No | New limit price. Omitted = market-after-trigger |
+| `tradingAccount` | string | Yes | The user's cross-margin subaccount |
+| `recentBlockhash` | string | Yes | Recent blockhash for signing |
+| `signature` | string | Yes | User's signature |
+
+**Response:**
+```json
+{
+  "success": true
+}
+```
+
+Accepted and published, as a create is. Confirm on the WebSocket
+`ConditionalOrderUpsert` event, which reports the new terms with
+`isUpdate: true`.
+
+**Rejections:** the new terms are validated exactly as a create's, against the
+position as it stands when the update is applied — wrong side of entry is
+`InvalidTriggerPrice` (76), an oversized `closeAmount` is
+`ConditionalOrderAggregateExceedsPosition` (82), and a `limitPrice` past the
+trigger is `ConditionalLimitPriceUnfillable` (85). The setting's own old size
+leaves the aggregate first, so re-arming a full-size setting at full size fits.
+
+| Condition | Error (custom code) |
+|-----------|---------------------|
+| No armed setting of that `kind` under that id | `ConditionalOrderNotFound` (81) |
+| Neither id given, or both | `400 BAD_REQUEST` |
+| No conditional orders on the symbol | `404 NOT_FOUND` |
+| No open position on the market | `NoPositionForConditionalOrder` (75) |
+| Account under liquidation | `AccountUnderLiquidation` |
+
+**Notes:**
+
+- The kind cannot change: an id that names a setting of the other kind is
+  `ConditionalOrderNotFound`, not a conversion.
+- A setting that has already fired or been cancelled is gone, so an update
+  naming it finds nothing. There is no update-or-create.
+- The trigger's retry budget resets: an update is new terms, so the attempts
+  charged against the old ones do not carry over.
+
+**Example:**
+```bash
+curl -X POST https://api.gum.ag/perps/conditionalOrder/update \
+  -H "X-PUBKEY: YOUR_PUBKEY" \
+  -H "Content-Type: application/json" \
+  -d '{"symbol":"SOL","kind":"TakeProfit","internalId":3,
+       "trigger":{"type":"price","value":130.0},
+       "triggerPriceType":"MarkPrice",
+       "closeAmount":{"type":"bps","value":5000},
+       "tradingAccount":"...","recentBlockhash":"...","signature":"..."}'
+```
+
+### Cancel Conditional Order
+
+**Endpoint:** `POST /conditionalOrder/cancel`
+
+**Request Body (one setting):**
+```json
+{
+  "symbol": "SOL",
+  "internalId": 3,
+  "tradingAccount": "TRADING_ACCOUNT_PUBKEY",
+  "recentBlockhash": "BLOCKHASH",
+  "signature": "SIGNATURE"
+}
+```
+
+**Request Fields:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `subaccountId` | number | No | Subaccount index (0-255). Defaults to `0` |
+| `symbol` | string | Yes | Market symbol |
+| `isIsolated` | boolean | No | Target the isolated-margin account. Defaults to `false` |
+| `internalId` | number | No | Cancel this setting |
+| `clientOrderId` | string \| number | No | Cancel the setting armed under this client id on `symbol` |
+| `tradingAccount` | string | Yes | The user's cross-margin subaccount |
+| `recentBlockhash` | string | Yes | Recent blockhash for signing |
+| `signature` | string | Yes | User's signature |
+
+**Response:**
+```json
+{
+  "success": true
+}
+```
+
+**Notes:**
+
+- `internalId` and `clientOrderId` are mutually exclusive — both is `400 BAD_REQUEST`.
+  Neither cancels every armed setting on the symbol.
+- A target matching nothing clears nothing and still succeeds, so a cancel racing a
+  trigger is a no-op rather than an error.
+- Nothing ever armed on the symbol is `404 NOT_FOUND`.
+
+### Get Conditional Orders
+
+**Endpoint:** `GET /tradingAccount/{trading_account}/conditionalOrders`
+
+**Headers:**
+
+| Header | Required | Description |
+|--------|----------|-------------|
+| `X-PUBKEY` | Yes | User's public key |
+
+**Response:**
+```json
+[
+  {
+    "internalId": 3,
+    "symbol": "SOL",
+    "kind": "TakeProfit",
+    "side": "Ask",
+    "triggerPrice": "120.0",
+    "triggerPriceType": "MarkPrice",
+    "closeAmount": { "type": "bps", "value": 5000 },
+    "isolated": false
+  },
+  {
+    "internalId": 4,
+    "symbol": "SOL",
+    "kind": "StopLoss",
+    "side": "Ask",
+    "triggerPrice": "90.0",
+    "triggerPriceType": "MarkPrice",
+    "closeAmount": { "type": "quantity", "value": "5.0" },
+    "limitPrice": "89.5",
+    "clientOrderId": "77",
+    "isolated": false
+  },
+  {
+    "internalId": 5,
+    "symbol": "SOL",
+    "kind": "TakeProfit",
+    "side": "Ask",
+    "triggerPrice": "150.0",
+    "triggerPriceType": "MarkPrice",
+    "closeAmount": { "type": "notional", "value": "300" },
+    "isolated": false
+  }
+]
+```
+
+**Response Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `internalId` | number | Addresses the setting for its whole life. What a cancel targets and what the events carry. Program-generated, so a number rather than a string |
+| `symbol` | string | Market symbol |
+| `kind` | string | `"TakeProfit"` or `"StopLoss"` |
+| `side` | string | Side the trigger closes on: `"Ask"` for a long, `"Bid"` for a short |
+| `triggerPrice` | string | Price the trigger fires at, derived when the create named a PnL or an ROI |
+| `triggerPriceType` | string | `"MarkPrice"` or `"LastPrice"` |
+| `closeAmount` | object | Close size, tagged as on create. `value` is a decimal string for `quantity` / `notional` and an integer for `bps` |
+| `limitPrice` | string | Limit price of the submitted order. Omitted = market-after-trigger |
+| `clientOrderId` | string | The client id the setting was armed under, if any |
+| `isolated` | boolean | `true` when the setting belongs to an isolated-margin account |
+
+**Notes:**
+
+- A cross-margin subaccount's listing includes its isolated accounts' settings, each
+  flagged with `isolated`.
+- Only settings bound to the live position instance are listed. One left behind by a
+  close, a flip, a reopen or a liquidation is omitted rather than reported as armed:
+  it can no longer fire, and a keeper will clear it (`reason: 1`) when it next touches
+  the account, which for an uncrossed trigger may be a while.
+
+**Example:**
+```bash
+curl https://api.gum.ag/perps/tradingAccount/TRADING_ACCOUNT_PUBKEY/conditionalOrders \
+  -H "X-PUBKEY: YOUR_PUBKEY"
+```
+
 ## Trading Account
 
 ### Create Trading Account
@@ -1549,7 +1948,8 @@ directly returns only its own position.
     "tierIndex": 0,
     "tierTableIdx": 0,
     "isolated": false,
-    "collateral": null
+    "collateral": null,
+    "adlQuantile": 2
   }
 ]
 ```
@@ -1579,6 +1979,7 @@ directly returns only its own position.
 | `tierTableIdx` | number | Tier table this position margins through. `0` is the market default returned by `/markets`; a whitelisted account can be pinned to another table |
 | `isolated` | boolean | `true` when the position is held in an isolated-margin account (backed by that account's own collateral) rather than the cross-margin account it is listed under |
 | `collateral` | string \| null | For an isolated position, the USDC collateral held by its isolated account — the equity backing the position (deposits ± realized PnL and fees, whether or not yet settled, excluding the open lots' unrealized PnL and funding). Can be negative while a bankrupt position is being liquidated. `null` for cross-margin positions, which share the account-level collateral reported by the trading-account endpoints |
+| `adlQuantile` | number \| null | ADL indicator: where the position stands in the market's auto-deleveraging queue for its side, which ranks profitable positions by profit percentage × effective leverage. `4` = top 10% (the head of the queue is always `4`), `3` = top 25%, `2` = top 50%, `1` = the rest, `0` = not in the queue (not profitable, account under liquidation, or ADL disabled on the market; see `isAdlEnabled` on `/markets`). Re-ranked about every 5 seconds; `null` while the indicator is unavailable. Current standing only, not a prediction that the position will or will not be deleveraged |
 
 **Notes:**
 - Unrealized PnL is calculated using `markPrice`. In phase one, `markPrice = indexPrice`.
@@ -1745,6 +2146,92 @@ curl "https://api.gum.ag/perps/tradingAccount/YOUR_TRADING_ACCOUNT/trades?startT
 
 ---
 
+### Get Position History
+
+Get the closed positions of a trading account, newest close first. Open positions are listed by `GET /tradingAccount/{trading_account}/positions`.
+
+> **Family aggregation.** Querying a cross-margin subaccount also returns the rows of its isolated-margin accounts (same user and `subaccountId`). Querying an isolated account directly returns only its own rows.
+
+**Endpoint:** `GET /tradingAccount/{trading_account}/positionHistory`
+
+**Path Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `trading_account` | string | Trading account public key |
+
+**Query Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `symbol` | string | No | Filter by market symbol (e.g., "SOL"). An unknown symbol returns no entries |
+| `limit` | number | No | Maximum entries to return (default: 100, max: 500) |
+| `offset` | number | No | Offset for pagination (default: 0) |
+| `startTime` | number | No | Unix timestamp - filter positions closed at or after this time |
+| `endTime` | number | No | Unix timestamp - filter positions closed at or before this time |
+
+**Response:**
+```json
+{
+  "entries": [
+    {
+      "symbol": "SOL",
+      "side": "Bid",
+      "isolated": false,
+      "entryPrice": "150.2",
+      "exitPrice": "155.8",
+      "closedSize": "2.5",
+      "realizedPnl": "14",
+      "fees": "0.765",
+      "funding": "-0.12",
+      "netPnl": "13.115",
+      "closeReason": "trade",
+      "openedAt": 1761091200,
+      "closedAt": 1761120000
+    }
+  ]
+}
+```
+
+**Response Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `entries` | array | Closed positions, sorted by `closedAt` descending |
+| `entries[].symbol` | string | Market symbol |
+| `entries[].side` | string | Side of the closed position: `"Bid"` for long or `"Ask"` for short |
+| `entries[].isolated` | boolean | `true` when the position was held in an isolated-margin account rather than the cross-margin account it is listed under |
+| `entries[].entryPrice` | string | Average price of every fill that opened or added to the position |
+| `entries[].exitPrice` | string | Average price of every fill that reduced or closed the position |
+| `entries[].closedSize` | string | Total size closed over the position's life in base units. Adds and partial closes count, so it equals the total size opened and can exceed the largest size held |
+| `entries[].realizedPnl` | string | Price PnL in USDC, excluding fees and funding: `closedSize × (exitPrice − entryPrice)` for a long, negated for a short |
+| `entries[].fees` | string | Fees in USDC, positive = paid: trading fees on every fill of the position (net of maker rebates, so it can be negative) plus any liquidation fee. A fill that flips the position splits its fee pro rata between the closed and the new position |
+| `entries[].funding` | string | Funding accrued over the position's life in USDC, positive = received |
+| `entries[].netPnl` | string | `realizedPnl − fees + funding`, in USDC |
+| `entries[].closeReason` | string | What closed the position: `"trade"` (an order, including a flip to the opposite side), `"liquidation"` or `"adl"` (auto-deleveraging) |
+| `entries[].openedAt` | number | Unix timestamp (seconds) of the first opening fill |
+| `entries[].closedAt` | number | Unix timestamp (seconds) of the fill that closed the position |
+
+**Notes:**
+- An entry covers one position from opening (from flat, or by flipping side) until it goes flat or flips again. A flip closes one entry and opens the next
+- Only positions opened after the program upgrade that tags fills with their position (see the 2026-10-27 changelog entry) are tracked. Positions already open at the upgrade are not listed, even after they close
+- A closed position is listed once all of its fills are indexed (its opened and closed sizes match); until then it is omitted rather than shown with partial prices or PnL
+- Trading account pubkey is validated (returns 400 if invalid)
+
+**Example:**
+```bash
+# Get the latest closed positions
+curl https://api.gum.ag/perps/tradingAccount/YOUR_TRADING_ACCOUNT/positionHistory
+
+# Get closed positions for a specific market with pagination
+curl "https://api.gum.ag/perps/tradingAccount/YOUR_TRADING_ACCOUNT/positionHistory?symbol=SOL&limit=50&offset=0"
+
+# Get positions closed in a time range
+curl "https://api.gum.ag/perps/tradingAccount/YOUR_TRADING_ACCOUNT/positionHistory?startTime=1761091200&endTime=1761177600"
+```
+
+---
+
 ### Get Order History
 
 Get historical orders (including filled, cancelled, and open orders) for a trading account.
@@ -1828,7 +2315,7 @@ Liquidation attempts that execute zero base size are omitted.
 | `orders[].originalSize` | string | Original order size in base units |
 | `orders[].filledSize` | string | Filled size in base units |
 | `orders[].realizedPnl` | string \| null | Realized PnL in USDC summed from this order's closing fill transactions; `null` when the order has no realized PnL. Fees are exposed separately on fill transactions and are not netted into this value. |
-| `orders[].status` | string | History status: `"open"`, `"partially_filled"`, `"filled"`, `"cancelled"`, `"partially_filled_cancelled"`, `"partially_liquidated"`, `"liquidated"`, `"expired"`. A liquidation order that closed part of the position to step it down a risk tier is `"partially_liquidated"` (display label: **Partially liquidated**). A liquidation order sized to close the whole position is `"liquidated"` (display label: **Liquidated**), including one whose unfilled remainder was cancelled. Both statuses are terminal for that order, not proof that the position or account is fully closed, and later attempts appear separately. Liquidations executed before the program recorded tier steps read `"liquidated"`. The `status` filter uses the same classification. The `transactions` trail retains any remainder cancellation. Any other order cancelled after a partial fill, including an ADL order or the unfilled remainder of an IOC or market order, is `"partially_filled_cancelled"` (display label: **Partially filled, rest cancelled**); `"cancelled"` means nothing filled. `"expired"` means removed by the system rather than by its owner |
+| `orders[].status` | string | History status: `"open"`, `"partially_filled"`, `"filled"`, `"cancelled"`, `"partially_filled_cancelled"`, `"partially_liquidated"`, `"liquidated"`, `"expired"`. A liquidation order that closed part of the position to step it down a risk tier is `"partially_liquidated"` (display label: **Partially liquidated**). A liquidation order sized to close the whole position is `"liquidated"` (display label: **Liquidated**), including one whose unfilled remainder was cancelled. Both statuses are terminal for that order, not proof that the position or account is fully closed, and later attempts appear separately. Liquidations executed before the program recorded tier steps read `"liquidated"`. The `status` filter uses the same classification. The `transactions` trail retains any remainder cancellation. Any other order cancelled after a partial fill, including an ADL order or the unfilled remainder of an IOC or market order, is `"partially_filled_cancelled"` (display label: **Partially filled, rest cancelled**); `"cancelled"` means nothing filled. `"expired"` means removed by the system rather than by its owner, currently only a reduce-only order displaced by a fired TP/SL |
 | `orders[].orderType` | string | Order type: `"limit"`, `"market"`, `"postOnly"`, `"liquidation"`, or `"adl"` |
 | `orders[].timeInForce` | string | Time in force: `"gtc"`, `"gtd"`, `"ioc"`, `"fok"`, `"liquidation"`, or `"adl"` |
 | `orders[].reduceOnly` | boolean | Whether the order was submitted as reduce-only |
@@ -1849,6 +2336,8 @@ Liquidation attempts that execute zero base size are omitted.
 | `orders[].transactions[].liquidationFee` | string? | Liquidation fee in USDC charged on this fill, reported by `LiquidationLog` (only for liquidation fill transactions). The fee is capped on-chain at the account's remaining equity, so underwater accounts are charged nothing and report `"0"`. Rows indexed before 2026-07-08 report the pre-cap accrued maximum instead, which may exceed the amount actually deducted. |
 | `orders[].transactions[].role` | string? | `"maker"` or `"taker"` (only for `"fill"` transactions) |
 | `orders[].transactions[].reason` | string? | Why the order was removed (only for `"cancel"` transactions), as the WebSocket `Cancel` event's `reason` values |
+| `orders[].transactions[].tpslId` | number? | `internalId` of the take-profit / stop-loss whose triggered order displaced this one (only with `reason: "TpslTriggerPriority"`) |
+| `orders[].transactions[].tpslKind` | string? | `"TakeProfit"` or `"StopLoss"` — which kind of setting displaced it, alongside `tpslId` |
 
 **Example:**
 ```bash
@@ -2418,12 +2907,16 @@ async function fetchWithRetry(url, options, maxRetries = 3) {
 | POST | `/order/cancel` | Cancel order |
 | POST | `/order/cancel-all` | Cancel all orders |
 | POST | `/order/batch` | Submit signed place/cancel actions as an API-level batch |
+| POST | `/conditionalOrder` | Arm a take-profit / stop-loss setting |
+| POST | `/conditionalOrder/cancel` | Clear one or every armed setting on a symbol |
+| POST | `/conditionalOrder/update` | Re-arm one live setting in place |
 | GET | `/leverage` | Build set-leverage transaction |
 | POST | `/leverage` | Submit signed set-leverage transaction |
 | GET | `/tradingAccount` | List user's accounts |
 | POST | `/tradingAccount` | Create trading account |
 | POST | `/tradingAccount/{trading_account}/name` | Rename subaccount |
 | GET | `/tradingAccount/{trading_account}/orders` | Get all open orders |
+| GET | `/tradingAccount/{trading_account}/conditionalOrders` | Get armed take-profit / stop-loss settings |
 | GET | `/tradingAccount/{trading_account}/positions` | Get perpetual positions |
 | GET | `/tradingAccount/{trading_account}/leverage` | Get per-market leverage preferences |
 | GET | `/tradingAccount/{trading_account}/balances` | Get token balances |

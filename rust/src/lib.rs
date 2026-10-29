@@ -26,8 +26,8 @@ pub use {
         Hash, ParseBytes32Error, ParseSignatureError, Pubkey, Signer, SignerError, TypedSignature,
     },
     request::{
-        ApiSigningError, BatchOrderActionSigned, BatchOrderRequest, BuildLeverageTransactionQuery,
-        BuildTransactionQuery, BuildTransferTransactionQuery, CancelAllOrders,
+        ApiSigningError, BatchOrderActionSigned, BatchOrderRequest, BuildTransactionQuery,
+        BuildTransferTransactionQuery, BuildUpsertAccountLeverageQuery, CancelAllOrders,
         CancelAllOrdersSigned, CancelOrder, CancelOrderSigned, CreateTradingAccountQuery,
         FundingHistoryQuery, OhlcvParams, OrderHistoryQuery, PlaceOrder, PlaceOrderSigned,
         RenameSubAccountRequest, SignableTradingRequest, SignedApiRequest, SignedCancelAllOrders,

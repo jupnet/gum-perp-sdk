@@ -88,6 +88,9 @@ pub struct PerpPositionResponse {
     pub tier_table_idx: u8,
     pub isolated: bool,
     pub collateral: Option<String>,
+    /// 4 = top 10% of the market's ADL queue for this side, 3 = top 25%, 2 = top 50%,
+    /// 1 = the rest, 0 = not a candidate.
+    pub adl_quantile: Option<u8>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -192,8 +195,6 @@ pub struct TradesResponse {
     pub trades: Vec<TradeResponse>,
 }
 
-/// New statuses may be added; ones this version does not know parse as `Unknown`.
-#[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OrderStatus {
@@ -208,8 +209,6 @@ pub enum OrderStatus {
     Liquidated,
     /// Removed by the system, not its owner.
     Expired,
-    #[serde(other)]
-    Unknown,
 }
 
 impl OrderStatus {
@@ -223,7 +222,6 @@ impl OrderStatus {
             Self::PartiallyLiquidated => "partially_liquidated",
             Self::Liquidated => "liquidated",
             Self::Expired => "expired",
-            Self::Unknown => "unknown",
         }
     }
 }
@@ -283,6 +281,7 @@ pub struct OrderHistoryEntry {
     pub initial_collateral: Option<String>,
     /// Consumed budget minus equity settled back, so negative for closes.
     pub executed_collateral: Option<String>,
+    pub origin_tx_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -306,10 +305,12 @@ pub struct OrderTransaction {
     pub role: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tpsl_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tpsl_kind: Option<String>,
 }
 
-/// New types may be added; ones this version does not know parse as `Unknown`.
-#[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TransactionType {
@@ -321,8 +322,6 @@ pub enum TransactionType {
     CrosschainWithdraw,
     CrosschainWithdrawRefund,
     FeeRebate,
-    #[serde(other)]
-    Unknown,
 }
 
 impl std::fmt::Display for TransactionType {
@@ -336,7 +335,6 @@ impl std::fmt::Display for TransactionType {
             Self::CrosschainWithdraw => "crosschain_withdraw",
             Self::CrosschainWithdrawRefund => "crosschain_withdraw_refund",
             Self::FeeRebate => "fee_rebate",
-            Self::Unknown => "unknown",
         })
     }
 }
