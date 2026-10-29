@@ -5,11 +5,6 @@ use {
     thiserror::Error,
 };
 
-/// `clientOrderId` codec: the API emits a decimal string (JS doubles round u64
-/// above 2^53) and accepts a string or a number.
-pub(crate) type ClientOrderIdAs =
-    serde_with::PickFirst<(serde_with::DisplayFromStr, serde_with::Same)>;
-
 #[derive(Clone, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(transparent)]
 pub struct MarketSymbol(pub String);

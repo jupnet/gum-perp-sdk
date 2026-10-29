@@ -79,7 +79,6 @@ pub struct MarketStats {
     pub stats_last_updated_ms: u64,
 }
 
-/// One notional band of a market's risk tier table.
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct RiskTierInfo {
@@ -125,9 +124,8 @@ pub struct MarketInfo {
     /// Limit-order price deviation band; `u32::MAX` disables the check.
     pub limit_order_deviation_bps: u32,
     pub order_limit_config: OrderLimitConfigInfo,
-    /// Per-account position notional cap in USD, before any whitelist override.
+    /// Before any whitelist override.
     pub max_account_position_notional: f64,
-    /// Market open-interest cap in USD, compared against `max(long, short)` open interest.
     pub max_market_open_interest: f64,
     pub index_price: f64,
     pub mark_price: f64,
@@ -137,14 +135,13 @@ pub struct MarketInfo {
     /// On a tiered market, the first `risk_tiers` band.
     pub initial_margin_ratio_bps: u16,
     pub maintenance_margin_ratio_bps: u16,
-    /// Largest selectable leverage.
     pub max_leverage: u8,
     pub taker_fee_bps: f64,
     pub maker_fee_bps: f64,
     pub liquidation_fee_bps: f64,
     pub timestamp: u64,
     pub last_updated_ms: u64,
-    /// Ascending notional bands; empty when the market margins flat.
+    /// Empty when the market margins flat.
     pub risk_tiers: Vec<RiskTierInfo>,
     #[serde(flatten)]
     pub stats: MarketStats,

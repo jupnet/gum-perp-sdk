@@ -4,7 +4,7 @@ use {
             serialize_action_message, CancelAllOrdersParams, CancelOrderParams,
             PlaceOrderIsolatedParams, PlaceOrderParams, TradingParams,
         },
-        types::{ClientOrderIdAs, OnchainTimeInForce},
+        types::OnchainTimeInForce,
         Hash, MarketParams, MarketSymbol, OrderStatus, OrderType, Pubkey, Side, Signer,
         SignerError, TimeInForce, TransactionType, TypedSignature, ValidationError,
     },
@@ -136,7 +136,6 @@ pub type SignedPlaceOrder = PlaceOrderSigned;
 pub type SignedCancelOrder = CancelOrderSigned;
 pub type SignedCancelAllOrders = CancelAllOrdersSigned;
 
-#[serde_with::serde_as]
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct PlaceOrder {
@@ -153,15 +152,11 @@ pub struct PlaceOrder {
     pub reduce_only: bool,
     #[serde(default)]
     pub time_in_force: TimeInForce,
-    #[serde_as(as = "Option<ClientOrderIdAs>")]
-    #[serde(default)]
     pub client_order_id: Option<NonZeroU64>,
-    /// USDC native units moved from the cross-margin parent into the isolated
-    /// account with this order. Required iff `is_isolated`; `0` draws on the
-    /// isolated account's existing balance.
+    /// USDC native units moved from the cross-margin parent into the isolated account.
+    /// Required iff `is_isolated`; `0` draws on the isolated account's existing balance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub collateral_amount: Option<u64>,
-    /// Isolated-margin order; must be paired with `collateral_amount`.
     #[serde(default)]
     pub is_isolated: bool,
 }
@@ -287,8 +282,6 @@ pub struct CancelOrder {
     #[serde_as(as = "Option<serde_with::DisplayFromStr>")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub order_id: Option<u128>,
-    #[serde_as(as = "Option<ClientOrderIdAs>")]
-    #[serde(default)]
     pub client_order_id: Option<NonZeroU64>,
 }
 
@@ -423,16 +416,14 @@ pub struct BuildTransactionQuery {
     pub trading_account: String,
 }
 
-/// GET /leverage - Query parameters.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct BuildLeverageTransactionQuery {
     #[serde(default)]
     pub subaccount_id: u8,
     pub symbol: String,
-    /// Set the isolated-margin preference instead of the cross-margin one.
     #[serde(default)]
     pub is_isolated: bool,
-    /// Integer leverage, `1..=max_leverage` from the market info.
+    /// `1..=max_leverage` from the market info.
     pub leverage: u8,
 }
 
