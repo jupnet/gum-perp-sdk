@@ -81,6 +81,38 @@ pub struct MarketStats {
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 #[serde(rename_all = "camelCase")]
+pub struct RiskTierInfo {
+    /// Upper bound in USD; a notional exactly on the cap belongs to the band above.
+    pub notional_cap: f64,
+    pub initial_margin_ratio_bps: u16,
+    pub maintenance_margin_ratio_bps: u16,
+    pub max_leverage: u8,
+    /// Maintenance margin is `notional * mmr - maintenance_amount`, floored at 0.
+    pub maintenance_amount: f64,
+}
+
+/// Per-order-type size limits: quantities in base units, notionals in USD.
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct OrderSizeLimitInfo {
+    pub min_order_qty: f64,
+    pub min_order_notional: f64,
+    pub max_open_order_qty: f64,
+    pub max_close_order_qty: f64,
+    pub max_open_order_notional: f64,
+    pub max_close_order_notional: f64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct OrderLimitConfigInfo {
+    pub limit: OrderSizeLimitInfo,
+    pub market: OrderSizeLimitInfo,
+    pub post_only: OrderSizeLimitInfo,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct MarketInfo {
     pub symbol: String,
     pub pubkey: String,
@@ -89,18 +121,29 @@ pub struct MarketInfo {
     pub quote_lot_size: u64,
     pub tick_size: f64,
     pub step_size: f64,
+    /// Limit-order price deviation band; `u32::MAX` disables the check.
+    pub limit_order_deviation_bps: u32,
+    pub order_limit_config: OrderLimitConfigInfo,
+    /// Before any whitelist override.
+    pub max_account_position_notional: f64,
+    pub max_market_open_interest: f64,
     pub index_price: f64,
     pub mark_price: f64,
     pub best_bid: f64,
     pub best_ask: f64,
     pub mid_price: f64,
+    /// On a tiered market, the first `risk_tiers` band.
     pub initial_margin_ratio_bps: u16,
     pub maintenance_margin_ratio_bps: u16,
+    pub max_leverage: u8,
     pub taker_fee_bps: f64,
     pub maker_fee_bps: f64,
     pub liquidation_fee_bps: f64,
+    pub is_adl_enabled: bool,
     pub timestamp: u64,
     pub last_updated_ms: u64,
+    /// Empty when the market margins flat.
+    pub risk_tiers: Vec<RiskTierInfo>,
     #[serde(flatten)]
     pub stats: MarketStats,
 }

@@ -2,13 +2,14 @@ use {
     crate::{
         ApiSigningError, BatchOrderRequest, BatchOrderResponse, BlockhashResponse,
         BuildTransactionQuery, BuildTransactionResponse, BuildTransferTransactionQuery,
-        CancelAllOrdersSigned, CancelAllResponse, CancelOrderSigned, CancelResponse,
-        CandleResponse, CheckTradingAccountResponse, CreateTradingAccountQuery,
-        CreateTradingAccountResponse, FundingHistoryQuery, FundingRateHistoryResponse,
-        FundingRateResponse, FundingRatesResponse, MarketInfo, OhlcvParams, OpenOrderResponse,
-        OrderHistoryQuery, OrderHistoryResponse, OrderbookResponse, PerpPositionResponse,
-        PlaceOrderSigned, PlaceResponse, Pubkey, RenameSubAccountRequest, RenameSubAccountResponse,
-        SignedApiRequest, SubmitTransactionRequest, SubmitTransactionResponse, TradesResponse,
+        BuildUpsertAccountLeverageQuery, CancelAllOrdersSigned, CancelAllResponse,
+        CancelOrderSigned, CancelResponse, CandleResponse, CheckTradingAccountResponse,
+        CreateTradingAccountQuery, CreateTradingAccountResponse, FundingHistoryQuery,
+        FundingRateHistoryResponse, FundingRateResponse, FundingRatesResponse, MarketInfo,
+        MarketLeverageResponse, OhlcvParams, OpenOrderResponse, OrderHistoryQuery,
+        OrderHistoryResponse, OrderbookResponse, PerpPositionResponse, PlaceOrderSigned,
+        PlaceResponse, Pubkey, RenameSubAccountRequest, RenameSubAccountResponse, SignedApiRequest,
+        SubmitTransactionRequest, SubmitTransactionResponse, TradesResponse,
         TradingAccountBalancesResponse, TradingAccountTradeResponse, TradingAccountTradesQuery,
         TransactionHistoryQuery, TransactionHistoryResponse, UserFundingResponse,
     },
@@ -229,6 +230,13 @@ impl RestClient {
         self.get_json(&format!("/tradingAccount/{trading_account}/positions"))
             .await
     }
+    pub async fn trading_account_leverage(
+        &self,
+        trading_account: &Pubkey,
+    ) -> ApiClientResult<Vec<MarketLeverageResponse>> {
+        self.get_json(&format!("/tradingAccount/{trading_account}/leverage"))
+            .await
+    }
     pub async fn balances(
         &self,
         trading_account: &Pubkey,
@@ -348,6 +356,28 @@ impl RestClient {
     ) -> ApiClientResult<SubmitTransactionResponse> {
         self.post_json(
             "/transfer",
+            &SubmitTransactionRequest {
+                serialized_transaction: serialized_transaction.into(),
+            },
+        )
+        .await
+    }
+
+    /// Unsigned leverage change; the server pays fees and rent. Sign it as this
+    /// client's pubkey and pass it to [`Self::submit_leverage`].
+    pub async fn build_leverage_transaction(
+        &self,
+        query: &BuildUpsertAccountLeverageQuery,
+    ) -> ApiClientResult<BuildTransactionResponse> {
+        self.get_json_with_query("/leverage", query).await
+    }
+
+    pub async fn submit_leverage(
+        &self,
+        serialized_transaction: impl Into<String>,
+    ) -> ApiClientResult<SubmitTransactionResponse> {
+        self.post_json(
+            "/leverage",
             &SubmitTransactionRequest {
                 serialized_transaction: serialized_transaction.into(),
             },

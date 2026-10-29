@@ -4,7 +4,7 @@ Standalone Rust SDK for Gum Perps REST/WebSocket API and signed trading payloads
 
 ```toml
 [dependencies]
-gum-perp-sdk = "0.1"
+gum-perp-sdk = "0.2"
 ```
 
 ## Included
@@ -21,7 +21,8 @@ gum-perp-sdk = "0.1"
    `RestClient::with_base_url(base_url, user_pubkey)` for staging or local development.
 2. Fetch market metadata with `client.market("SOL")`.
 3. Fetch a recent blockhash with `client.blockhash()`.
-4. Build `PlaceOrder`, `CancelOrder`, or `CancelAllOrders`.
+4. Build `PlaceOrder`, `CancelOrder`, or `CancelAllOrders`. For an isolated-margin order set
+   `is_isolated: true` with `collateral_amount`; `trading_account` stays the cross-margin subaccount.
 5. Sign locally with `sign_request_with(...)`, or ask an external signer to sign `message_to_sign(...)`.
 6. Submit with `client.place_order(&signed)` or `WebsocketClient::post_signed(...)`. To
    batch, wrap signed place/cancel bodies in `BatchOrderActionSigned` and submit a
@@ -29,5 +30,12 @@ gum-perp-sdk = "0.1"
 
 For WebSocket, `WebsocketClient::connect()` targets production; `connect_to(base_url)`
 takes a custom endpoint. The user pubkey must match the signer of trading actions.
+
+Leverage uses the same build-then-submit flow as deposit/withdraw:
+`build_leverage_transaction(...)` returns an unsigned transaction to sign as the user, then
+`submit_leverage(...)` submits it. Read current preferences with `trading_account_leverage(...)`.
+
+Take-profit / stop-loss orders and position history are documented in the
+[REST API](../docs/REST_API.md) but not yet wrapped by this crate.
 
 See `examples/` for REST, signing, and WebSocket usage.

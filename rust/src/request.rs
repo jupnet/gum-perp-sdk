@@ -153,8 +153,29 @@ pub struct PlaceOrder {
     #[serde(default)]
     pub time_in_force: TimeInForce,
     pub client_order_id: Option<NonZeroU64>,
+    /// USDC native units moved from the cross-margin parent into the isolated account.
+    /// Required iff `is_isolated`; `0` draws on the isolated account's existing balance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub collateral_amount: Option<u64>,
+    #[serde(default)]
+    pub is_isolated: bool,
+}
+
+impl PlaceOrder {
+    /// Mirrors the API's admission check so a mismatched pair fails before signing.
+    fn validate_isolated_fields(&self) -> Result<(), ValidationError> {
+        if self.is_isolated != self.collateral_amount.is_some() {
+            return Err(ValidationError::InvalidInput(
+                "is_isolated and collateral_amount must be provided together".to_string(),
+            ));
+        }
+        if self.reduce_only && self.collateral_amount.unwrap_or(0) > 0 {
+            return Err(ValidationError::InvalidInput(
+                "reduce-only orders never draw collateral: set collateral_amount to 0".to_string(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl JTXAction for PlaceOrder {
@@ -218,9 +239,10 @@ impl JTXAction for PlaceOrder {
             client_order_id: self.client_order_id,
         };
 
-        Ok(if let Some(collateral_amount) = self.collateral_amount {
+        self.validate_isolated_fields()?;
+        Ok(if self.is_isolated {
             TradingParams::PlaceIsolated(PlaceOrderIsolatedParams {
-                collateral_amount,
+                collateral_amount: self.collateral_amount.unwrap_or(0),
                 order,
             })
         } else {
@@ -392,6 +414,17 @@ pub struct BatchOrderRequest {
 pub struct BuildTransactionQuery {
     pub amount: u64,
     pub trading_account: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct BuildUpsertAccountLeverageQuery {
+    #[serde(default)]
+    pub subaccount_id: u8,
+    pub symbol: String,
+    #[serde(default)]
+    pub is_isolated: bool,
+    /// `1..=max_leverage` from the market info.
+    pub leverage: u8,
 }
 
 /// GET /transfer - Query parameters

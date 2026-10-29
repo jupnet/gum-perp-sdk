@@ -42,6 +42,7 @@ fn place_order_message_matches_internal_sdk_golden_bytes() {
         time_in_force: TimeInForce::GoodTilCanceled,
         client_order_id: Some(NonZeroU64::new(42).unwrap()),
         collateral_amount: None,
+        is_isolated: false,
     };
 
     let msg = order

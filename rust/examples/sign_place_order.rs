@@ -24,6 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         time_in_force: TimeInForce::GoodTilCanceled,
         client_order_id: Some(NonZeroU64::new(1).unwrap()),
         collateral_amount: None,
+        is_isolated: false,
     };
 
     let signed = order.sign_request_with(user, &market, blockhash, &signer)?;

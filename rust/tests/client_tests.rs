@@ -59,12 +59,12 @@ fn default_clients_target_the_production_gum_api() {
     assert_eq!(client.pubkey(), user);
     assert_eq!(
         client.endpoint_url("/markets"),
-        "https://gum-api.jup.net/jtx/mainnet-beta/markets"
+        "https://api.gum.ag/perps/markets"
     );
 
     assert_eq!(
         WebsocketClient::websocket_url(GUM_API_URL).unwrap(),
-        "wss://gum-api.jup.net/jtx/mainnet-beta/ws"
+        "wss://api.gum.ag/perps/ws"
     );
 }
 
